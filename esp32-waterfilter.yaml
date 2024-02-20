@@ -1,0 +1,266 @@
+esphome:
+  name: "esp32-waterfilter"
+  platform: ESP32
+  board: nodemcu-32s
+
+wifi:
+  ssid: "WLAN"
+  password: "secret"
+  #use_address:  192.168.178.102
+
+captive_portal:
+
+# Enable logging
+logger:
+
+# Enable Home Assistant API
+api:
+  encryption:
+    key: foooooooooooooooooooooooooooooooooooooo/bar=
+
+ota:
+  password: !secret ota
+
+web_server:
+  port: 80
+  version: 2
+  auth:
+    username: admin
+    password: !secret water
+
+time:
+  - platform: sntp
+    id: sntp_time
+    timezone: Europe/Berlin
+    on_time:
+      # Every 1 minutes
+      - seconds: /60
+        then:
+          - if:
+              condition:
+                switch.is_on: water_filter
+              then:
+                - number.increment:
+                    id: emg_timer
+                    cycle: false
+                # - logger.log:
+                #     format: "Incrementing emg_timer: %.1f"
+                #     args: [ 'id(emg_timer).state' ]
+              else:
+                - number.to_min: emg_timer
+          - if:
+              condition:
+                - number.in_range:
+                    id: emg_timer
+                    above: 3
+              then:
+                - script.execute: stop_all
+                - logger.log: "Water is flowing for ~3 minutes, turning it all off, just in case."
+
+number:
+  - platform: template
+    id: emg_timer
+    optimistic: true
+    min_value: 0
+    max_value: 5
+    step: 1
+
+sensor:
+  - platform: wifi_signal # Reports the WiFi signal strength/RSSI in dB
+    id: wifi_signal_db
+    name: "WiFi Signal dB"
+    update_interval: 60s
+    entity_category: "diagnostic"
+  - platform: copy # Reports the WiFi signal strength in %
+    source_id: wifi_signal_db
+    name: "WiFi Signal Percent"
+    filters:
+      - lambda: return min(max(2 * (x + 100.0), 0.0), 100.0);
+    unit_of_measurement: "%"
+    entity_category: "diagnostic"
+    device_class: ""
+
+text_sensor:
+  - platform: homeassistant
+    id: person_foo
+    entity_id: person.foo
+
+binary_sensor:
+  - platform: homeassistant
+    id: water_filter_disabled
+    entity_id: input_boolean.block_water_valve
+  - platform: homeassistant
+    id: guests
+    entity_id: input_boolean.guests
+  - platform: homeassistant
+    id: water_leak
+    entity_id: binary_sensor.moisture_kitchen
+  - platform: gpio
+    id: toggle
+    internal: True
+    filters:
+      - delayed_on_off: 50ms
+    pin:
+      number: 25 # orange
+      inverted: True
+      mode:
+        input: True
+        pullup: True
+    on_click:
+      then:
+        - if:
+            condition:
+              not:
+                script.is_running: scripted_timer
+            then:
+              - output.turn_on: led_on_off
+              - script.execute:
+                  id: scripted_timer
+                  delay_ms: 180000
+            else:
+              - script.execute: stop_all
+  - platform: gpio
+    id: pour400ml
+    internal: True
+    filters:
+      - delayed_on_off: 50ms
+    pin:
+      number: 26 # blue
+      inverted: True
+      mode:
+        input: True
+        pullup: True
+    on_click:
+      then:
+        - if:
+            condition:
+              not:
+                script.is_running: scripted_timer
+            then:
+              - output.turn_on: led_400
+              - script.execute:
+                  id: scripted_timer
+                  delay_ms: 9000
+            else:
+              - script.execute: stop_all
+  - platform: gpio
+    id: pour600ml
+    internal: True
+    filters:
+      - delayed_on_off: 50ms
+    pin:
+      number: 18 # green
+      inverted: True
+      mode:
+        input: True
+        pullup: True
+    on_click:
+      then:
+        - if:
+            condition:
+              not:
+                script.is_running: scripted_timer
+            then:
+              - output.turn_on: led_600
+              - script.execute:
+                  id: scripted_timer
+                  delay_ms: 17000
+            else:
+              - script.execute: stop_all
+  - platform: gpio
+    id: pour2000ml
+    internal: True
+    filters:
+      - delayed_on_off: 50ms
+    pin:
+      number: 19 # yellow
+      inverted: True
+      mode:
+        input: True
+        pullup: True
+    on_click:
+      then:
+        - if:
+            condition:
+              not:
+                script.is_running: scripted_timer
+            then:
+              - output.turn_on: led_2000
+              - script.execute:
+                  id: scripted_timer
+                  delay_ms: 44000
+            else:
+              - script.execute: stop_all
+
+output:
+  - platform: gpio
+    id: led_on_off
+    pin:
+      number: 16 # brown
+      inverted: False
+      mode:
+        output: True
+  - platform: gpio
+    id: led_600
+    pin:
+      number: 21 # yellow
+      inverted: False
+      mode:
+        output: True
+  - platform: gpio
+    id: led_400
+    pin:
+      number: 22 # green
+      inverted: False
+      mode:
+        output: True
+  - platform: gpio
+    id: led_2000
+    pin:
+      number: 17 # orange
+      inverted: False
+      mode:
+        output: True
+
+switch:
+  - platform: gpio
+    id: water_filter
+    name: "Water Filter"
+    icon: "mdi:valve"
+    pin: 27
+    restore_mode: ALWAYS_OFF
+  - platform: restart
+    name: "Restart Water Filter"
+    id: restart_water_filter
+
+script:
+  - id: scripted_timer
+    mode: restart
+    parameters:
+      delay_ms: int
+    then:
+      - if:
+          condition:
+            and:
+              - binary_sensor.is_off: water_leak
+              - binary_sensor.is_off: water_filter_disabled
+              - switch.is_off: water_filter
+              - or:
+                - binary_sensor.is_on: guests
+                - text_sensor.state:
+                    id: person_foo
+                    state: 'home'
+          then:
+            - switch.turn_on: water_filter
+            - delay: !lambda return delay_ms;
+            - script.execute: stop_all
+          # else:
+          #   - script.stop: scripted_timer
+  - id: stop_all
+    then:
+      - script.stop: scripted_timer
+      - switch.turn_off: water_filter
+      - output.turn_off: led_on_off
+      - output.turn_off: led_400
+      - output.turn_off: led_600
+      - output.turn_off: led_2000
